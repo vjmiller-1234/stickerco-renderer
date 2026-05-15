@@ -81,6 +81,7 @@ async function renderSticker(composition) {
 
   for (const elem of elements) {
     const url = resolveImageUrl(elem);
+    console.log(`[render] Element: ${elem.elementId || elem.elemId}, URL: ${url}, BASE_URL: ${BASE_URL}`);
     if (!url) {
       console.warn(`No image mapping found for element:`,
         elem.elementId || elem.elemId || "unknown");
