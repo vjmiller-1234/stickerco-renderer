@@ -17,20 +17,39 @@ function assetIdToUrl(assetId) {
   if (!assetId) return null;
   const id = String(assetId).replace("rbxassetid://", "").trim();
   if (!id || id === "0" || id === "") return null;
-  return `https://assetdelivery.roblox.com/v1/asset/?id=${id}`;
+  // Use the v2 asset delivery endpoint which is more reliable
+  return `https://assetdelivery.roblox.com/v2/asset/?id=${id}`;
 }
 
 // Fetch an image from a URL and return as a Buffer
 async function fetchImage(url) {
+  // Roblox asset delivery redirects to a CDN URL — we need to follow it
   const response = await fetch(url, {
-    headers: { "User-Agent": "StickerCoRenderer/1.0" },
+    headers: {
+      "User-Agent": "Mozilla/5.0 (compatible; StickerCoRenderer/1.0)",
+      "Accept": "image/png,image/jpeg,image/*,*/*",
+    },
     redirect: "follow",
   });
+
   if (!response.ok) {
     throw new Error(`Failed to fetch image: ${url} — ${response.status}`);
   }
+
+  // Verify we actually got an image back
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("image")) {
+    throw new Error(`Expected image but got ${contentType} from ${url}`);
+  }
+
   const arrayBuffer = await response.arrayBuffer();
-  return Buffer.from(arrayBuffer);
+  const buffer = Buffer.from(arrayBuffer);
+
+  if (buffer.length < 100) {
+    throw new Error(`Image buffer too small (${buffer.length} bytes) — likely an error page`);
+  }
+
+  return buffer;
 }
 
 // Build a GameData element lookup from the elementId
@@ -84,7 +103,7 @@ async function renderSticker(composition) {
     try {
       imageBuffer = await fetchImage(url);
     } catch (err) {
-      console.warn(`Skipping element ${assetId}: ${err.message}`);
+      console.error(`Skipping element ${assetId} (url: ${url}): ${err.message}`);
       continue;
     }
 
