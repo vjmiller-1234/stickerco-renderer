@@ -3,81 +3,68 @@ const sharp = require("sharp");
 // ============================================================
 // CONFIG
 // ============================================================
-const CANVAS_SIZE    = 400;   // base canvas in pixels
-const OUTLINE_WIDTH  = 3;     // black outline in pixels
-const OFFSET_WIDTH   = 15;    // white bleed around sticker shape
-const ALLOWED_ORIGIN = "*";   // restrict to your Roblox game domain in production
+const CANVAS_SIZE    = 400;
+const OUTLINE_WIDTH  = 3;
+const OFFSET_WIDTH   = 15;
+const ALLOWED_ORIGIN = "*";
+
+// ============================================================
+// ELEMENT IMAGE MAP
+// Maps element IDs to filenames in /public/elements/
+// Must stay in sync with GameData.DesignElements in Roblox
+// ============================================================
+const ELEMENT_IMAGE_MAP = {
+  "yellow-spotted-mushroom":    "yellow-spotted-mushroom.png",
+  "pink-white-mushroom":        "pink-white-mushroom.png",
+  "blue-mushroom":              "blue-mushroom.png",
+  "tall-pine-tree":             "tall-pine-tree.png",
+  "sun":                        "sun.png",
+  "pot-of-flowers-transparent": "pot-of-flowers-transparent.png",
+};
+
+// Base URL for static assets — set from environment variable
+// VERCEL_URL is automatically set by Vercel on deployment
+const BASE_URL = process.env.VERCEL_URL
+  ? `https://${process.env.VERCEL_URL}`
+  : "http://localhost:3000";
 
 // ============================================================
 // HELPERS
 // ============================================================
 
-// Convert rbxassetid://123 or plain number to Roblox CDN URL
-function assetIdToUrl(assetId) {
-  if (!assetId) return null;
-  const id = String(assetId).replace("rbxassetid://", "").trim();
-  if (!id || id === "0" || id === "") return null;
-  // Use the v2 asset delivery endpoint which is more reliable
-  return `https://assetdelivery.roblox.com/v2/asset/?id=${id}`;
+function resolveImageUrl(elem) {
+  const key = elem.elementId || elem.elemId;
+  if (key && ELEMENT_IMAGE_MAP[key]) {
+    return `${BASE_URL}/elements/${ELEMENT_IMAGE_MAP[key]}`;
+  }
+  return null;
 }
 
-// Fetch an image from a URL and return as a Buffer
 async function fetchImage(url) {
-  // Roblox asset delivery redirects to a CDN URL — we need to follow it
   const response = await fetch(url, {
     headers: {
-      "User-Agent": "Mozilla/5.0 (compatible; StickerCoRenderer/1.0)",
-      "Accept": "image/png,image/jpeg,image/*,*/*",
+      "User-Agent": "StickerCoRenderer/1.0",
+      "Accept":     "image/png,image/jpeg,image/*,*/*",
     },
-    redirect: "follow",
   });
 
   if (!response.ok) {
     throw new Error(`Failed to fetch image: ${url} — ${response.status}`);
   }
 
-  // Verify we actually got an image back
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("image")) {
     throw new Error(`Expected image but got ${contentType} from ${url}`);
   }
 
   const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
+  const buffer      = Buffer.from(arrayBuffer);
 
   if (buffer.length < 100) {
-    throw new Error(`Image buffer too small (${buffer.length} bytes) — likely an error page`);
+    throw new Error(`Image buffer too small (${buffer.length} bytes)`);
   }
 
   return buffer;
-}
-
-// Build a GameData element lookup from the elementId
-// Maps short IDs like "pink-white-mushroom" to their Roblox asset IDs
-// This must stay in sync with GameData.DesignElements in Roblox
-const ELEMENT_IMAGE_MAP = {
-  "yellow-spotted-mushroom":    "131682077817131",
-  "pink-white-mushroom":        "76025735581020",
-  "blue-mushroom":              "105871797208797",
-  "tall-pine-tree":             "110090071326520",
-  "sun":                        "125698818774994",
-  "pot-of-flowers-transparent": "109399409794572",
-};
-
-function resolveAssetId(elem) {
-  // Try elementId short name first
-  if (elem.elementId && ELEMENT_IMAGE_MAP[elem.elementId]) {
-    return ELEMENT_IMAGE_MAP[elem.elementId];
-  }
-  // Try elemId (alternate field name)
-  if (elem.elemId && ELEMENT_IMAGE_MAP[elem.elemId]) {
-    return ELEMENT_IMAGE_MAP[elem.elemId];
-  }
-  // Fall back to raw assetId if provided
-  if (elem.assetId) {
-    return String(elem.assetId).replace("rbxassetid://", "");
-  }
-  return null;
 }
 
 // ============================================================
@@ -93,51 +80,47 @@ async function renderSticker(composition) {
   const layers = [];
 
   for (const elem of elements) {
-    const assetId = resolveAssetId(elem);
-    if (!assetId) continue;
-
-    const url = assetIdToUrl(assetId);
-    if (!url) continue;
+    const url = resolveImageUrl(elem);
+    if (!url) {
+      console.warn(`No image mapping found for element:`,
+        elem.elementId || elem.elemId || "unknown");
+      continue;
+    }
 
     let imageBuffer;
     try {
       imageBuffer = await fetchImage(url);
     } catch (err) {
-      console.error(`Skipping element ${assetId} (url: ${url}): ${err.message}`);
+      console.error(`Skipping element (url: ${url}): ${err.message}`);
       continue;
     }
 
-    // Determine display size in pixels
     // sizeScale is 0-1 fraction of canvas, default 0.25
     const sizeScale = elem.sizeScale || elem.scale || 0.25;
     const sizePx    = Math.round(sizeScale * canvasW);
     if (sizePx < 1) continue;
 
-    // Position: posX/posY are 0-1 fractions, 0.5 = centre
+    // posX/posY are 0-1 fractions, 0.5 = centre
     const posX = elem.posX || elem.x || 0.5;
     const posY = elem.posY || elem.y || 0.5;
 
-    // Top-left corner of the element
-    const topLeftX = Math.round(posX * canvasW - sizePx / 2);
-    const topLeftY = Math.round(posY * canvasH - sizePx / 2);
-
-    const rotation  = elem.rotation || 0;
-    const flipH     = elem.flipH || elem.flipped || false;
-    const flipV     = elem.flipV || false;
+    const rotation = elem.rotation || 0;
+    const flipH    = elem.flipH || elem.flipped || false;
+    const flipV    = elem.flipV || false;
 
     try {
       // Resize the source image to the display size
       let img = sharp(imageBuffer)
         .resize(sizePx, sizePx, {
-          fit: "contain",
+          fit:        "contain",
           background: { r: 0, g: 0, b: 0, alpha: 0 },
         });
 
       // Apply flips before rotation
-      if (flipH) img = img.flop();   // horizontal flip
-      if (flipV) img = img.flip();   // vertical flip
+      if (flipH) img = img.flop();
+      if (flipV) img = img.flip();
 
-      // Apply rotation (sharp rotates around centre, fills with transparent)
+      // Apply rotation
       if (rotation !== 0) {
         img = img.rotate(rotation, {
           background: { r: 0, g: 0, b: 0, alpha: 0 },
@@ -146,28 +129,28 @@ async function renderSticker(composition) {
 
       const processedBuffer = await img.png().toBuffer();
 
-      // Get actual dimensions after rotation (rotation can change bounding box)
-      const meta      = await sharp(processedBuffer).metadata();
-      const actualW   = meta.width;
-      const actualH   = meta.height;
+      // Get actual dimensions after rotation (bounding box may have grown)
+      const meta   = await sharp(processedBuffer).metadata();
+      const actualW = meta.width;
+      const actualH = meta.height;
 
-      // Re-centre after rotation: the bounding box may have grown
+      // Re-centre after rotation
       const adjustedX = Math.round(posX * canvasW - actualW / 2);
       const adjustedY = Math.round(posY * canvasH - actualH / 2);
 
       layers.push({
-        input:  processedBuffer,
-        left:   adjustedX,
-        top:    adjustedY,
+        input: processedBuffer,
+        left:  adjustedX,
+        top:   adjustedY,
       });
     } catch (err) {
-      console.warn(`Failed to process element ${assetId}:`, err.message);
+      console.warn(`Failed to process element (url: ${url}):`, err.message);
       continue;
     }
   }
 
   if (layers.length === 0) {
-    // Return a transparent 400x400 PNG if no elements rendered
+    console.warn("[render] No layers rendered — returning transparent canvas");
     return await sharp({
       create: {
         width:      canvasW,
@@ -191,44 +174,41 @@ async function renderSticker(composition) {
   .png()
   .toBuffer();
 
-  // Step 3 — Extract the alpha mask from the composited image
-  // We use this to generate the white offset and black outline
+  // Step 3 — Extract raw pixel data for mask generation
   const { data: rawData, info } = await sharp(composited)
     .raw()
     .toBuffer({ resolveWithObject: true });
 
   const { width, height, channels } = info;
 
-  // Step 4 — Build white offset mask by dilating the alpha channel
-  // For each pixel, check if any pixel within OFFSET_WIDTH radius has alpha > 0
-  const totalPixels  = width * height;
-  const offsetMask   = new Uint8Array(totalPixels);
-  const outlineMask  = new Uint8Array(totalPixels);
+  // Step 4 — Build white offset and black outline masks
+  // by dilating the alpha channel outward
+  const totalPixels = width * height;
+  const offsetMask  = new Uint8Array(totalPixels);
+  const outlineMask = new Uint8Array(totalPixels);
+  const r           = OFFSET_WIDTH + OUTLINE_WIDTH;
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const idx   = y * width + x;
-      const alpha = rawData[idx * channels + 3];
-      if (alpha > 10) {
-        // Mark all pixels within OFFSET_WIDTH as part of the offset
-        const r = OFFSET_WIDTH + OUTLINE_WIDTH;
-        for (let dy = -r; dy <= r; dy++) {
-          for (let dx = -r; dx <= r; dx++) {
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            const nx   = x + dx;
-            const ny   = y + dy;
-            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-            const nIdx = ny * width + nx;
-            if (dist <= r)             outlineMask[nIdx] = 255;
-            if (dist <= OFFSET_WIDTH)  offsetMask[nIdx]  = 255;
-          }
+      const alpha = rawData[(y * width + x) * channels + 3];
+      if (alpha <= 10) continue;
+
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const nx   = x + dx;
+          const ny   = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const nIdx = ny * width + nx;
+          if (dist <= r)            outlineMask[nIdx] = 255;
+          if (dist <= OFFSET_WIDTH) offsetMask[nIdx]  = 255;
         }
       }
     }
   }
 
-  // Step 5 — Build the final image:
-  // Layer order (bottom to top):
+  // Step 5 — Compose final image
+  // Layer order bottom to top:
   //   1. Black outline (outlineMask minus offsetMask)
   //   2. White offset (offsetMask)
   //   3. Original composited elements
@@ -237,47 +217,38 @@ async function renderSticker(composition) {
   for (let i = 0; i < totalPixels; i++) {
     const isOutline = outlineMask[i] > 0 && offsetMask[i] === 0;
     const isOffset  = offsetMask[i] > 0;
-
     const origAlpha = rawData[i * channels + 3];
     const hasOrig   = origAlpha > 10;
 
     if (hasOrig) {
-      // Original pixel — use as-is
       finalData[i * 4]     = rawData[i * channels];
       finalData[i * 4 + 1] = rawData[i * channels + 1];
       finalData[i * 4 + 2] = rawData[i * channels + 2];
       finalData[i * 4 + 3] = origAlpha;
     } else if (isOffset) {
-      // White bleed area
       finalData[i * 4]     = 255;
       finalData[i * 4 + 1] = 255;
       finalData[i * 4 + 2] = 255;
       finalData[i * 4 + 3] = 255;
     } else if (isOutline) {
-      // Black outline
       finalData[i * 4]     = 0;
       finalData[i * 4 + 1] = 0;
       finalData[i * 4 + 2] = 0;
       finalData[i * 4 + 3] = 255;
     } else {
-      // Transparent
       finalData[i * 4 + 3] = 0;
     }
   }
 
-  // Convert back to PNG
-  const finalPng = await sharp(finalData, {
+  return await sharp(finalData, {
     raw: { width, height, channels: 4 },
   }).png().toBuffer();
-
-  return finalPng;
 }
 
 // ============================================================
 // VERCEL HANDLER
 // ============================================================
 export default async function handler(req, res) {
-  // CORS headers
   res.setHeader("Access-Control-Allow-Origin",  ALLOWED_ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -290,7 +261,6 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  // Basic auth check — add a secret key to prevent abuse
   const authHeader = req.headers["authorization"];
   const SECRET_KEY = process.env.RENDER_SECRET_KEY;
   if (SECRET_KEY && authHeader !== `Bearer ${SECRET_KEY}`) {
@@ -311,11 +281,10 @@ export default async function handler(req, res) {
 
   try {
     console.log(`[render] Rendering sticker with ${
-      (composition.elements || []).length} element(s)`);
+      (composition.elements || []).length} element(s) — BASE_URL: ${BASE_URL}`);
 
     const pngBuffer = await renderSticker(composition);
 
-    // Return as base64 so Roblox HttpService can handle it
     const base64 = pngBuffer.toString("base64");
 
     return res.status(200).json({
