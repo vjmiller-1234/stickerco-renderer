@@ -69,10 +69,6 @@ async function uploadToRoblox(pngBuffer, displayName) {
     throw new Error("ROBLOX_API_KEY or ROBLOX_CREATOR_ID not configured");
   }
 
-  // Build multipart form body manually for reliable behavior
-  // in serverless environments
-  const boundary = `----StickerCoBoundary${Date.now()}`;
-
   const metadata = JSON.stringify({
     assetType:   "Decal",
     displayName: displayName || "StickerCo Sticker",
@@ -84,94 +80,94 @@ async function uploadToRoblox(pngBuffer, displayName) {
     },
   });
 
-  // Build the multipart body as a Buffer
-  const parts = [];
+  // Build multipart body manually — most reliable in serverless
+  const boundary = `boundary${Date.now()}`;
+  const CRLF     = "\r\n";
 
-  // Part 1 — metadata JSON
-  parts.push(Buffer.from(
-    `--${boundary}\r\n` +
-    `Content-Disposition: form-data; name="request"\r\n` +
-    `Content-Type: application/json\r\n\r\n` +
-    `${metadata}\r\n`
-  ));
+  const metadataPart = Buffer.concat([
+    Buffer.from(
+      `--${boundary}${CRLF}` +
+      `Content-Disposition: form-data; name="request"${CRLF}` +
+      `Content-Type: application/json${CRLF}` +
+      `${CRLF}` +
+      `${metadata}${CRLF}`
+    ),
+  ]);
 
-  // Part 2 — PNG file
-  parts.push(Buffer.from(
-    `--${boundary}\r\n` +
-    `Content-Disposition: form-data; name="fileContent"; filename="sticker.png"\r\n` +
-    `Content-Type: image/png\r\n\r\n`
-  ));
-  parts.push(pngBuffer);
-  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+  const filePart = Buffer.concat([
+    Buffer.from(
+      `--${boundary}${CRLF}` +
+      `Content-Disposition: form-data; name="fileContent"; filename="sticker.png"${CRLF}` +
+      `Content-Type: image/png${CRLF}` +
+      `${CRLF}`
+    ),
+    pngBuffer,
+    Buffer.from(`${CRLF}`),
+  ]);
 
-  const body = Buffer.concat(parts);
+  const closingPart = Buffer.from(`--${boundary}--${CRLF}`);
 
-  console.log(`[render] Uploading to Roblox — body size: ${body.length} bytes`);
+  const body = Buffer.concat([metadataPart, filePart, closingPart]);
+
+  console.log(`[render] Body size: ${body.length}, boundary: ${boundary}`);
+  console.log(`[render] Metadata: ${metadata}`);
 
   const uploadResponse = await fetch("https://apis.roblox.com/assets/v1/assets", {
     method:  "POST",
     headers: {
-      "x-api-key":    ROBLOX_API_KEY,
-      "Content-Type": `multipart/form-data; boundary=${boundary}`,
-      "Content-Length": body.length.toString(),
+      "x-api-key":      ROBLOX_API_KEY,
+      "Content-Type":   `multipart/form-data; boundary=${boundary}`,
+      "Content-Length": String(body.length),
     },
     body: body,
   });
 
+  const responseText = await uploadResponse.text();
+  console.log(`[render] Roblox response (${uploadResponse.status}): ${responseText}`);
+
   if (!uploadResponse.ok) {
-    const errorText = await uploadResponse.text();
-    throw new Error(`Roblox upload failed (${uploadResponse.status}): ${errorText}`);
+    throw new Error(`Roblox upload failed (${uploadResponse.status}): ${responseText}`);
   }
 
-  const uploadResult = await uploadResponse.json();
-  console.log("[render] Upload response:", JSON.stringify(uploadResult));
-
+  const uploadResult = JSON.parse(responseText);
   const operationPath = uploadResult.path;
   if (!operationPath) {
-    throw new Error(`No operation path returned: ${JSON.stringify(uploadResult)}`);
+    throw new Error(`No operation path: ${responseText}`);
   }
 
-  // Poll until the operation completes
-  const maxAttempts = 10;
-  const pollDelay   = 2000;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    await new Promise(resolve => setTimeout(resolve, pollDelay));
+  // Poll until complete
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     const pollResponse = await fetch(
-      `https://apis.roblox.com/assets/v1/${operationPath}`, {
-        headers: { "x-api-key": ROBLOX_API_KEY },
-      }
+      `https://apis.roblox.com/assets/v1/${operationPath}`,
+      { headers: { "x-api-key": ROBLOX_API_KEY } }
     );
 
-    if (!pollResponse.ok) {
-      console.warn(`[render] Poll attempt ${attempt} failed:`, pollResponse.status);
-      continue;
-    }
+    const pollText = await pollResponse.text();
+    console.log(`[render] Poll ${attempt}: ${pollText}`);
 
-    const pollResult = await pollResponse.json();
-    console.log(`[render] Poll attempt ${attempt}:`, JSON.stringify(pollResult));
+    if (!pollResponse.ok) continue;
 
+    const pollResult = JSON.parse(pollText);
     if (pollResult.done) {
       if (pollResult.error) {
-        throw new Error(`Asset processing failed: ${JSON.stringify(pollResult.error)}`);
+        throw new Error(`Processing failed: ${JSON.stringify(pollResult.error)}`);
       }
-
       const assetId = pollResult.response?.assetId
         || pollResult.response?.Id
         || pollResult.assetId;
-
       if (!assetId) {
-        throw new Error(`No assetId in completed operation: ${JSON.stringify(pollResult)}`);
+        throw new Error(`No assetId: ${pollText}`);
       }
-
-      console.log(`[render] Upload complete — assetId: ${assetId}`);
+      console.log(`[render] Done — rbxassetid://${assetId}`);
       return `rbxassetid://${assetId}`;
     }
   }
 
-  throw new Error("Upload timed out after polling");
+  throw new Error("Upload timed out");
 }
+
 // ============================================================
 // RENDER PIPELINE
 // ============================================================
