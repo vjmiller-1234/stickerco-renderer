@@ -154,20 +154,53 @@ async function uploadToRoblox(pngBuffer, displayName) {
       if (pollResult.error) {
         throw new Error(`Processing failed: ${JSON.stringify(pollResult.error)}`);
       }
+
       const assetId = pollResult.response?.assetId
         || pollResult.response?.Id
         || pollResult.assetId;
+
       if (!assetId) {
         throw new Error(`No assetId: ${pollText}`);
       }
-      console.log(`[render] Done — rbxassetid://${assetId}`);
+
+      // The assetId from Open Cloud is not the same as the rbxassetid
+      // We need to fetch the asset details to get the real content ID
+      console.log(`[render] Fetching real content ID for asset ${assetId}`);
+
+      const assetResponse = await fetch(
+        `https://apis.roblox.com/assets/v1/assets/${assetId}`,
+        { headers: { "x-api-key": ROBLOX_API_KEY } }
+      );
+
+      const assetText = await assetResponse.text();
+      console.log(`[render] Asset details: ${assetText}`);
+
+      if (!assetResponse.ok) {
+        console.warn(`[render] Asset lookup failed, using operation ID`);
+        return `rbxassetid://${assetId}`;
+      }
+
+      const assetDetails = JSON.parse(assetText);
+
+      // Try to extract the content ID from the asset details
+      const contentId = assetDetails.contentId
+        || assetDetails.ContentId
+        || assetDetails.id
+        || assetDetails.Id;
+
+      if (contentId) {
+        console.log(`[render] Real content ID: ${contentId}`);
+        return `rbxassetid://${contentId}`;
+      }
+
+      // If no content ID found log full response and fall back
+      console.warn(`[render] No contentId found in: ${assetText}`);
       return `rbxassetid://${assetId}`;
     }
   }
 
   throw new Error("Upload timed out");
 }
-
 // ============================================================
 // RENDER PIPELINE
 // ============================================================
