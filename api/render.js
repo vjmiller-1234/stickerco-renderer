@@ -62,7 +62,6 @@ async function fetchImage(url) {
 
 // ============================================================
 // ROBLOX OPEN CLOUD UPLOAD
-// Uploads a PNG buffer to Roblox and returns the assetId
 // ============================================================
 async function uploadToRoblox(pngBuffer, displayName) {
   if (!ROBLOX_API_KEY || !CREATOR_ID) {
@@ -80,7 +79,6 @@ async function uploadToRoblox(pngBuffer, displayName) {
     },
   });
 
-  // Build multipart body manually — most reliable in serverless
   const boundary = `boundary${Date.now()}`;
   const CRLF     = "\r\n";
 
@@ -106,8 +104,7 @@ async function uploadToRoblox(pngBuffer, displayName) {
   ]);
 
   const closingPart = Buffer.from(`--${boundary}--${CRLF}`);
-
-  const body = Buffer.concat([metadataPart, filePart, closingPart]);
+  const body        = Buffer.concat([metadataPart, filePart, closingPart]);
 
   console.log(`[render] Body size: ${body.length}, boundary: ${boundary}`);
   console.log(`[render] Metadata: ${metadata}`);
@@ -129,7 +126,7 @@ async function uploadToRoblox(pngBuffer, displayName) {
     throw new Error(`Roblox upload failed (${uploadResponse.status}): ${responseText}`);
   }
 
-  const uploadResult = JSON.parse(responseText);
+  const uploadResult  = JSON.parse(responseText);
   const operationPath = uploadResult.path;
   if (!operationPath) {
     throw new Error(`No operation path: ${responseText}`);
@@ -150,79 +147,67 @@ async function uploadToRoblox(pngBuffer, displayName) {
     if (!pollResponse.ok) continue;
 
     const pollResult = JSON.parse(pollText);
-    if (pollResult.done) {
-      if (pollResult.error) {
-        throw new Error(`Processing failed: ${JSON.stringify(pollResult.error)}`);
+    if (!pollResult.done) continue;
+
+    if (pollResult.error) {
+      throw new Error(`Processing failed: ${JSON.stringify(pollResult.error)}`);
+    }
+
+    const assetId = pollResult.response?.assetId
+      || pollResult.response?.Id
+      || pollResult.assetId;
+
+    if (!assetId) {
+      throw new Error(`No assetId: ${pollText}`);
+    }
+
+    // Look up the real content ID using read permission
+    console.log(`[render] Looking up legacy asset ID for ${assetId}`);
+
+    const legacyResponse = await fetch(
+      `https://apis.roblox.com/assets/v1/assets/${assetId}`,
+      { headers: { "x-api-key": ROBLOX_API_KEY } }
+    );
+
+    const legacyText = await legacyResponse.text();
+    console.log(`[render] Legacy lookup (${legacyResponse.status}): ${legacyText}`);
+
+    if (legacyResponse.ok) {
+      const legacyData = JSON.parse(legacyText);
+
+      // Log every field to find the correct one
+      for (const [key, value] of Object.entries(legacyData)) {
+        console.log(`[render] Field: ${key} = ${JSON.stringify(value)}`);
       }
 
-      const assetId = pollResult.response?.assetId
-        || pollResult.response?.Id
-        || pollResult.assetId;
+      const contentId = legacyData.contentId
+        || legacyData.ContentId
+        || legacyData.id
+        || legacyData.Id;
 
-      if (!assetId) {
-        throw new Error(`No assetId: ${pollText}`);
+      if (contentId && String(contentId) !== String(assetId)) {
+        console.log(`[render] Using content ID: ${contentId}`);
+        return `rbxassetid://${contentId}`;
       }
-
-      // The assetId from Open Cloud is not the same as the rbxassetid
-      // We need to fetch the asset details to get the real content ID
-// Use the Roblox legacy API to get the real rbxassetid
-// The Open Cloud assetId maps to a different ID than what
-// rbxassetid:// uses in-game
-console.log(`[render] Looking up legacy asset ID for ${assetId}`);
-
-const legacyResponse = await fetch(
-  `https://apis.roblox.com/assets/v1/assets/${assetId}`,
-  {
-    headers: {
-      "x-api-key": ROBLOX_API_KEY,
     }
-  }
-);
 
-const legacyText = await legacyResponse.text();
-console.log(`[render] Legacy lookup response (${legacyResponse.status}): ${legacyText}`);
+    // Try version endpoint
+    console.log(`[render] Trying version endpoint...`);
+    const altResponse = await fetch(
+      `https://apis.roblox.com/assets/v1/assets/${assetId}/versions/1`,
+      { headers: { "x-api-key": ROBLOX_API_KEY } }
+    );
+    const altText = await altResponse.text();
+    console.log(`[render] Version endpoint (${altResponse.status}): ${altText}`);
 
-if (legacyResponse.ok) {
-  const legacyData = JSON.parse(legacyText);
-  console.log(`[render] Full asset data:`, JSON.stringify(legacyData));
-
-  // Log every field so we can find the right one
-  for (const [key, value] of Object.entries(legacyData)) {
-    console.log(`[render] Field: ${key} = ${JSON.stringify(value)}`);
-  }
-
-  const contentId = legacyData.contentId
-    || legacyData.ContentId
-    || legacyData.id
-    || legacyData.Id
-    || legacyData.assetId
-    || legacyData.AssetId;
-
-  if (contentId && contentId !== assetId) {
-    console.log(`[render] Using content ID: ${contentId}`);
-    return `rbxassetid://${contentId}`;
-  }
-}
-
-// Try the alternative endpoint format
-console.log(`[render] Trying alternative lookup...`);
-const altResponse = await fetch(
-  `https://apis.roblox.com/assets/v1/assets/${assetId}/versions/1`,
-  {
-    headers: { "x-api-key": ROBLOX_API_KEY }
-  }
-);
-const altText = await altResponse.text();
-console.log(`[render] Alt lookup (${altResponse.status}): ${altText}`);
-
-// Fall back to operation assetId — may work after processing delay
-console.log(`[render] Falling back to operation assetId: ${assetId}`);
-return `rbxassetid://${assetId}`;
-    }
+    // Fall back to operation assetId
+    console.log(`[render] Falling back to operation assetId: ${assetId}`);
+    return `rbxassetid://${assetId}`;
   }
 
   throw new Error("Upload timed out");
 }
+
 // ============================================================
 // RENDER PIPELINE
 // ============================================================
@@ -230,8 +215,7 @@ async function renderSticker(composition) {
   const canvasW = (composition.canvasSize && composition.canvasSize[0]) || CANVAS_SIZE;
   const canvasH = (composition.canvasSize && composition.canvasSize[1]) || CANVAS_SIZE;
   const elements = composition.elements || [];
-
-  const layers = [];
+  const layers   = [];
 
   for (const elem of elements) {
     const url = resolveImageUrl(elem);
@@ -276,18 +260,11 @@ async function renderSticker(composition) {
       }
 
       const processedBuffer = await img.png().toBuffer();
-      const meta    = await sharp(processedBuffer).metadata();
-      const actualW = meta.width;
-      const actualH = meta.height;
+      const meta            = await sharp(processedBuffer).metadata();
+      const adjustedX       = Math.round(posX * canvasW - meta.width  / 2);
+      const adjustedY       = Math.round(posY * canvasH - meta.height / 2);
 
-      const adjustedX = Math.round(posX * canvasW - actualW / 2);
-      const adjustedY = Math.round(posY * canvasH - actualH / 2);
-
-      layers.push({
-        input: processedBuffer,
-        left:  adjustedX,
-        top:   adjustedY,
-      });
+      layers.push({ input: processedBuffer, left: adjustedX, top: adjustedY });
     } catch (err) {
       console.warn(`Failed to process element (url: ${url}):`, err.message);
       continue;
@@ -413,25 +390,22 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing composition in request body" });
   }
 
-  // Optional display name for the uploaded asset
   const displayName = body.displayName || "StickerCo Sticker";
 
   try {
     console.log(`[render] Rendering sticker with ${
       (composition.elements || []).length} element(s)`);
 
-    const pngBuffer = await renderSticker(composition);
-
+    const pngBuffer  = await renderSticker(composition);
     console.log(`[render] PNG rendered — ${pngBuffer.length} bytes — uploading to Roblox`);
 
     const rbxAssetId = await uploadToRoblox(pngBuffer, displayName);
-
     console.log(`[render] Complete — ${rbxAssetId}`);
 
     return res.status(200).json({
-      success:     true,
-      rbxAssetId:  rbxAssetId,
-      size:        pngBuffer.length,
+      success:    true,
+      rbxAssetId: rbxAssetId,
+      size:       pngBuffer.length,
     });
 
   } catch (err) {
