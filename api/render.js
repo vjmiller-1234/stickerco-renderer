@@ -24,9 +24,7 @@ const ELEMENT_IMAGE_MAP = {
 
 // Base URL for static assets — set from environment variable
 // VERCEL_URL is automatically set by Vercel on deployment
-const BASE_URL = process.env.VERCEL_URL
-  ? `https://${process.env.VERCEL_URL}`
-  : "http://localhost:3000";
+const BASE_URL = process.env.ASSET_BASE_URL || "http://localhost:3000";
 
 // ============================================================
 // HELPERS
