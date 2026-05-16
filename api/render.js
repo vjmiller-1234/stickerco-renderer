@@ -165,37 +165,59 @@ async function uploadToRoblox(pngBuffer, displayName) {
 
       // The assetId from Open Cloud is not the same as the rbxassetid
       // We need to fetch the asset details to get the real content ID
-      console.log(`[render] Fetching real content ID for asset ${assetId}`);
+// Use the Roblox legacy API to get the real rbxassetid
+// The Open Cloud assetId maps to a different ID than what
+// rbxassetid:// uses in-game
+console.log(`[render] Looking up legacy asset ID for ${assetId}`);
 
-      const assetResponse = await fetch(
-        `https://apis.roblox.com/assets/v1/assets/${assetId}`,
-        { headers: { "x-api-key": ROBLOX_API_KEY } }
-      );
+const legacyResponse = await fetch(
+  `https://apis.roblox.com/assets/v1/assets/${assetId}`,
+  {
+    headers: {
+      "x-api-key": ROBLOX_API_KEY,
+    }
+  }
+);
 
-      const assetText = await assetResponse.text();
-      console.log(`[render] Asset details: ${assetText}`);
+const legacyText = await legacyResponse.text();
+console.log(`[render] Legacy lookup response (${legacyResponse.status}): ${legacyText}`);
 
-      if (!assetResponse.ok) {
-        console.warn(`[render] Asset lookup failed, using operation ID`);
-        return `rbxassetid://${assetId}`;
-      }
+if (legacyResponse.ok) {
+  const legacyData = JSON.parse(legacyText);
+  console.log(`[render] Full asset data:`, JSON.stringify(legacyData));
 
-      const assetDetails = JSON.parse(assetText);
+  // Log every field so we can find the right one
+  for (const [key, value] of Object.entries(legacyData)) {
+    console.log(`[render] Field: ${key} = ${JSON.stringify(value)}`);
+  }
 
-      // Try to extract the content ID from the asset details
-      const contentId = assetDetails.contentId
-        || assetDetails.ContentId
-        || assetDetails.id
-        || assetDetails.Id;
+  const contentId = legacyData.contentId
+    || legacyData.ContentId
+    || legacyData.id
+    || legacyData.Id
+    || legacyData.assetId
+    || legacyData.AssetId;
 
-      if (contentId) {
-        console.log(`[render] Real content ID: ${contentId}`);
-        return `rbxassetid://${contentId}`;
-      }
+  if (contentId && contentId !== assetId) {
+    console.log(`[render] Using content ID: ${contentId}`);
+    return `rbxassetid://${contentId}`;
+  }
+}
 
-      // If no content ID found log full response and fall back
-      console.warn(`[render] No contentId found in: ${assetText}`);
-      return `rbxassetid://${assetId}`;
+// Try the alternative endpoint format
+console.log(`[render] Trying alternative lookup...`);
+const altResponse = await fetch(
+  `https://apis.roblox.com/assets/v1/assets/${assetId}/versions/1`,
+  {
+    headers: { "x-api-key": ROBLOX_API_KEY }
+  }
+);
+const altText = await altResponse.text();
+console.log(`[render] Alt lookup (${altResponse.status}): ${altText}`);
+
+// Fall back to operation assetId — may work after processing delay
+console.log(`[render] Falling back to operation assetId: ${assetId}`);
+return `rbxassetid://${assetId}`;
     }
   }
 
