@@ -242,6 +242,7 @@ async function renderSticker(composition) {
     const rotation = elem.rotation || 0;
     const flipH    = elem.flipH || elem.flipped || false;
     const flipV    = elem.flipV || false;
+    const zIndex   = elem.zIndex || 1;
 
     try {
       let img = sharp(imageBuffer)
@@ -264,7 +265,13 @@ async function renderSticker(composition) {
       const adjustedX       = Math.round(posX * canvasW - meta.width  / 2);
       const adjustedY       = Math.round(posY * canvasH - meta.height / 2);
 
-      layers.push({ input: processedBuffer, left: adjustedX, top: adjustedY });
+      // Carry zIndex through for sorting before composite
+      layers.push({
+        input:  processedBuffer,
+        left:   adjustedX,
+        top:    adjustedY,
+        zIndex: zIndex,
+      });
     } catch (err) {
       console.warn(`Failed to process element (url: ${url}):`, err.message);
       continue;
@@ -283,6 +290,13 @@ async function renderSticker(composition) {
     }).png().toBuffer();
   }
 
+  // Sort by zIndex so higher zIndex renders on top
+  // sharp composites in array order — first = bottom, last = top
+  layers.sort((a, b) => (a.zIndex || 1) - (b.zIndex || 1));
+
+  // sharp's composite() only accepts input/left/top — strip zIndex before passing
+  const sharpLayers = layers.map(({ input, left, top }) => ({ input, left, top }));
+
   const composited = await sharp({
     create: {
       width:      canvasW,
@@ -291,7 +305,7 @@ async function renderSticker(composition) {
       background: { r: 0, g: 0, b: 0, alpha: 0 },
     },
   })
-  .composite(layers)
+  .composite(sharpLayers)
   .png()
   .toBuffer();
 
