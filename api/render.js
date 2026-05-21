@@ -355,12 +355,13 @@ async function renderSticker(composition) {
       finalData[i * 4 + 1] = 255;
       finalData[i * 4 + 2] = 255;
       finalData[i * 4 + 3] = 255;
-    } else if (isOutline) {
-      finalData[i * 4]     = 0;
-      finalData[i * 4 + 1] = 0;
-      finalData[i * 4 + 2] = 0;
-      finalData[i * 4 + 3] = 255;
-    } else {
+    } //else if (isOutline) {
+      //finalData[i * 4]     = 0;
+      //finalData[i * 4 + 1] = 0;
+      //finalData[i * 4 + 2] = 0;
+      //finalData[i * 4 + 3] = 255;
+    //} 
+  else {
       finalData[i * 4 + 3] = 0;
     }
   }
