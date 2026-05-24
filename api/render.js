@@ -27,6 +27,18 @@ const ELEMENT_IMAGE_MAP = {
   "Mermaids-Starfish":          "Mermaids-Starfish.png",
   "Mermaids-TreasureChest":     "Mermaids-TreasureChest.png",
   "Mermaids-Wave":              "Mermaids-Wave.png",
+  "FairyGarden-Bird":           "FairyGarden-Bird.png",
+  "FairyGarden-Butterfly":      "FairyGarden-Butterfly.png",
+  "FairyGarden-Bunny":          "FairyGarden-Bunny.png",
+  "FairyGarden-Fairy":          "FairyGarden-Fairy.png",
+  "FairyGarden-FairyCastle":    "FairyGarden-FairyCastle.png",
+  "FairyGarden-FrogPrince":     "FairyGarden-FrogPrince.png",
+  "FairyGarden-Gnome":          "FairyGarden-Gnome.png",
+  "FairyGarden-MushroomHouse":  "FairyGarden-MushroomHouse.png",
+  "FairyGarden-PurpleFlower":   "FairyGarden-PurpleFlower.png",
+  "FairyGarden-Snail":          "FairyGarden-Snail.png",
+  "FairyGarden-Wand":           "FairyGarden-Wand.png",
+  "FairyGarden-YellowFlower":   "FairyGarden-YellowFlower.png",
 };
 
 const BASE_URL       = process.env.ASSET_BASE_URL || "http://localhost:3000";
