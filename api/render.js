@@ -15,6 +15,18 @@ const ELEMENT_IMAGE_MAP = {
   "tall-pine-tree":             "tall-pine-tree.png",
   "sun":                        "sun.png",
   "pot-of-flowers-transparent": "pot-of-flowers-transparent.png",
+  "Mermaids-Coral":             "Mermaids-Coral.png",
+  "Mermaids-BlueGirlMermaid":   "Mermaids-BlueGirlMermaid.png",
+  "Mermaids-Bubbles":           "Mermaids-Bubbles.png",
+  "Mermaids-Castle":            "Mermaids-Castle.png",
+  "Mermaids-ColorfulFish":      "Mermaids-ColorfulFish.png",
+  "Mermaids-Jellyfish":         "Mermaids-Jellyfish.png",
+  "Mermaids-Seahorse":          "Mermaids-Seahorse.png",
+  "Mermaids-Seashell":          "Mermaids-Seashell.png",
+  "Mermaids-Seaweed":           "Mermaids-Seaweed.png",
+  "Mermaids-Starfish":          "Mermaids-Starfish.png",
+  "Mermaids-TreasureChest":     "Mermaids-TreasureChest.png",
+  "Mermaids-Wave":              "Mermaids-Wave.png",
 };
 
 const BASE_URL       = process.env.ASSET_BASE_URL || "http://localhost:3000";
