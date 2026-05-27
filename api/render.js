@@ -1,5 +1,5 @@
 const sharp = require("sharp");
-
+ 
 // ============================================================
 // CONFIG
 // ============================================================
@@ -7,7 +7,7 @@ const CANVAS_SIZE    = 400;
 const OUTLINE_WIDTH  = 3;
 const OFFSET_WIDTH   = 15;
 const ALLOWED_ORIGIN = "*";
-
+ 
 const ELEMENT_IMAGE_MAP = {
   "yellow-spotted-mushroom":    "yellow-spotted-mushroom.png",
   "pink-white-mushroom":        "pink-white-mushroom.png",
@@ -52,15 +52,15 @@ const ELEMENT_IMAGE_MAP = {
   "BasicBackgroundShapes-Square":         "BasicBackgroundShapes-Square.png",
   "BasicBackgroundShapes-Circle":         "BasicBackgroundShapes-Circle.png",
 };
-
+ 
 const BASE_URL       = process.env.ASSET_BASE_URL || "http://localhost:3000";
 const ROBLOX_API_KEY = process.env.ROBLOX_API_KEY;
 const CREATOR_ID     = process.env.ROBLOX_CREATOR_ID;
-
+ 
 // ============================================================
 // HELPERS
 // ============================================================
-
+ 
 function resolveImageUrl(elem) {
   const key = elem.elementId || elem.elemId;
   if (key && ELEMENT_IMAGE_MAP[key]) {
@@ -68,7 +68,7 @@ function resolveImageUrl(elem) {
   }
   return null;
 }
-
+ 
 async function fetchImage(url) {
   const response = await fetch(url, {
     headers: {
@@ -76,26 +76,81 @@ async function fetchImage(url) {
       "Accept":     "image/png,image/jpeg,image/*,*/*",
     },
   });
-
+ 
   if (!response.ok) {
     throw new Error(`Failed to fetch image: ${url} — ${response.status}`);
   }
-
+ 
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("image")) {
     throw new Error(`Expected image but got ${contentType} from ${url}`);
   }
-
+ 
   const arrayBuffer = await response.arrayBuffer();
   const buffer      = Buffer.from(arrayBuffer);
-
+ 
   if (buffer.length < 100) {
     throw new Error(`Image buffer too small (${buffer.length} bytes)`);
   }
-
+ 
   return buffer;
 }
-
+ 
+// ============================================================
+// COLOR TINTING
+// Applies a color tint to a PNG buffer while preserving:
+//   - Black/dark pixels (outline) — stays dark
+//   - Transparent pixels — stays transparent
+//   - White pixels — becomes the target color
+//   - Mid-tone pixels — proportionally tinted
+//
+// This is done via per-pixel manipulation rather than Sharp's
+// tint() chain to avoid ordering issues with resize/flip/rotate.
+// ============================================================
+async function applyColorTint(pngBuffer, hexColor) {
+  const normalised = hexColor.replace("#", "").toUpperCase();
+  const tr = parseInt(normalised.slice(0, 2), 16);
+  const tg = parseInt(normalised.slice(2, 4), 16);
+  const tb = parseInt(normalised.slice(4, 6), 16);
+ 
+  const { data, info } = await sharp(pngBuffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+ 
+  const { width, height } = info;
+  const out = Buffer.alloc(width * height * 4);
+ 
+  for (let i = 0; i < width * height; i++) {
+    const r = data[i * 4];
+    const g = data[i * 4 + 1];
+    const b = data[i * 4 + 2];
+    const a = data[i * 4 + 3];
+ 
+    if (a === 0) {
+      // Fully transparent — preserve as-is
+      out[i * 4]     = 0;
+      out[i * 4 + 1] = 0;
+      out[i * 4 + 2] = 0;
+      out[i * 4 + 3] = 0;
+    } else {
+      // Luminance of original pixel (0.0 = black, 1.0 = white)
+      // Black pixels (outline) → luminance ≈ 0 → output stays near black
+      // White pixels (fill)    → luminance ≈ 1 → output becomes tint color
+      const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+ 
+      out[i * 4]     = Math.round(tr * lum);
+      out[i * 4 + 1] = Math.round(tg * lum);
+      out[i * 4 + 2] = Math.round(tb * lum);
+      out[i * 4 + 3] = a;
+    }
+  }
+ 
+  return await sharp(out, {
+    raw: { width, height, channels: 4 },
+  }).png().toBuffer();
+}
+ 
 // ============================================================
 // ROBLOX OPEN CLOUD UPLOAD
 // ============================================================
@@ -103,7 +158,7 @@ async function uploadToRoblox(pngBuffer, displayName) {
   if (!ROBLOX_API_KEY || !CREATOR_ID) {
     throw new Error("ROBLOX_API_KEY or ROBLOX_CREATOR_ID not configured");
   }
-
+ 
   const metadata = JSON.stringify({
     assetType:   "Image",
     displayName: displayName || "StickerCo Sticker",
@@ -114,10 +169,10 @@ async function uploadToRoblox(pngBuffer, displayName) {
       },
     },
   });
-
+ 
   const boundary = `boundary${Date.now()}`;
   const CRLF     = "\r\n";
-
+ 
   const metadataPart = Buffer.concat([
     Buffer.from(
       `--${boundary}${CRLF}` +
@@ -127,7 +182,7 @@ async function uploadToRoblox(pngBuffer, displayName) {
       `${metadata}${CRLF}`
     ),
   ]);
-
+ 
   const filePart = Buffer.concat([
     Buffer.from(
       `--${boundary}${CRLF}` +
@@ -138,13 +193,13 @@ async function uploadToRoblox(pngBuffer, displayName) {
     pngBuffer,
     Buffer.from(`${CRLF}`),
   ]);
-
+ 
   const closingPart = Buffer.from(`--${boundary}--${CRLF}`);
   const body        = Buffer.concat([metadataPart, filePart, closingPart]);
-
+ 
   console.log(`[render] Body size: ${body.length}, boundary: ${boundary}`);
   console.log(`[render] Metadata: ${metadata}`);
-
+ 
   const uploadResponse = await fetch("https://apis.roblox.com/assets/v1/assets", {
     method:  "POST",
     headers: {
@@ -154,79 +209,77 @@ async function uploadToRoblox(pngBuffer, displayName) {
     },
     body: body,
   });
-
+ 
   const responseText = await uploadResponse.text();
   console.log(`[render] Roblox response (${uploadResponse.status}): ${responseText}`);
-
+ 
   if (!uploadResponse.ok) {
     throw new Error(`Roblox upload failed (${uploadResponse.status}): ${responseText}`);
   }
-
+ 
   const uploadResult  = JSON.parse(responseText);
   const operationPath = uploadResult.path;
   if (!operationPath) {
     throw new Error(`No operation path: ${responseText}`);
   }
-
+ 
   // Poll until complete
   for (let attempt = 1; attempt <= 10; attempt++) {
     await new Promise(resolve => setTimeout(resolve, 2000));
-
+ 
     const pollResponse = await fetch(
       `https://apis.roblox.com/assets/v1/${operationPath}`,
       { headers: { "x-api-key": ROBLOX_API_KEY } }
     );
-
+ 
     const pollText = await pollResponse.text();
     console.log(`[render] Poll ${attempt}: ${pollText}`);
-
+ 
     if (!pollResponse.ok) continue;
-
+ 
     const pollResult = JSON.parse(pollText);
     if (!pollResult.done) continue;
-
+ 
     if (pollResult.error) {
       throw new Error(`Processing failed: ${JSON.stringify(pollResult.error)}`);
     }
-
+ 
     const assetId = pollResult.response?.assetId
       || pollResult.response?.Id
       || pollResult.assetId;
-
+ 
     if (!assetId) {
       throw new Error(`No assetId: ${pollText}`);
     }
-
-    // Look up the real content ID using read permission
+ 
     console.log(`[render] Looking up legacy asset ID for ${assetId}`);
-
+ 
     const legacyResponse = await fetch(
       `https://apis.roblox.com/assets/v1/assets/${assetId}`,
       { headers: { "x-api-key": ROBLOX_API_KEY } }
     );
-
+ 
     const legacyText = await legacyResponse.text();
     console.log(`[render] Legacy lookup (${legacyResponse.status}): ${legacyText}`);
-
+ 
     if (legacyResponse.ok) {
       const legacyData = JSON.parse(legacyText);
-
+ 
       for (const [key, value] of Object.entries(legacyData)) {
         console.log(`[render] Field: ${key} = ${JSON.stringify(value)}`);
       }
-
+ 
       const contentId = legacyData.contentId
         || legacyData.ContentId
         || legacyData.id
         || legacyData.Id;
-
+ 
       if (contentId && String(contentId) !== String(assetId)) {
         console.log(`[render] Using content ID: ${contentId}`);
         return `rbxassetid://${contentId}`;
       }
     }
-
-    // Try version endpoint
+ 
     console.log(`[render] Trying version endpoint...`);
     const altResponse = await fetch(
       `https://apis.roblox.com/assets/v1/assets/${assetId}/versions/1`,
@@ -234,24 +287,23 @@ async function uploadToRoblox(pngBuffer, displayName) {
     );
     const altText = await altResponse.text();
     console.log(`[render] Version endpoint (${altResponse.status}): ${altText}`);
-
-    // Fall back to operation assetId
+ 
     console.log(`[render] Falling back to operation assetId: ${assetId}`);
     return `rbxassetid://${assetId}`;
   }
-
+ 
   throw new Error("Upload timed out");
 }
-
+ 
 // ============================================================
 // RENDER PIPELINE
 // ============================================================
 async function renderSticker(composition) {
-  const canvasW = (composition.canvasSize && composition.canvasSize[0]) || CANVAS_SIZE;
-  const canvasH = (composition.canvasSize && composition.canvasSize[1]) || CANVAS_SIZE;
+  const canvasW  = (composition.canvasSize && composition.canvasSize[0]) || CANVAS_SIZE;
+  const canvasH  = (composition.canvasSize && composition.canvasSize[1]) || CANVAS_SIZE;
   const elements = composition.elements || [];
   const layers   = [];
-
+ 
   for (const elem of elements) {
     const url = resolveImageUrl(elem);
     console.log(`[render] Element: ${elem.elementId || elem.elemId}, URL: ${url}`);
@@ -259,7 +311,7 @@ async function renderSticker(composition) {
       console.warn(`No image mapping found for element:`, elem.elementId || elem.elemId);
       continue;
     }
-
+ 
     let imageBuffer;
     try {
       imageBuffer = await fetchImage(url);
@@ -267,58 +319,55 @@ async function renderSticker(composition) {
       console.error(`Skipping element (url: ${url}): ${err.message}`);
       continue;
     }
-
-    const sizeScale  = elem.sizeScale || elem.scale || 0.25;
-    const sizePx     = Math.round(sizeScale * canvasW);
+ 
+    const sizeScale = elem.sizeScale || elem.scale || 0.25;
+    const sizePx    = Math.round(sizeScale * canvasW);
     if (sizePx < 1) continue;
-
-    const posX      = elem.posX     || elem.x        || 0.5;
-    const posY      = elem.posY     || elem.y        || 0.5;
-    const rotation  = elem.rotation || 0;
-    const flipH     = elem.flipH    || elem.flipped  || false;
-    const flipV     = elem.flipV    || false;
-    const zIndex    = elem.zIndex   || 1;
-
-    // ── NEW: read per-element color for colorable elements ──
-    const elemColor = elem.color || null;
-
+ 
+    const posX     = elem.posX     || elem.x       || 0.5;
+    const posY     = elem.posY     || elem.y       || 0.5;
+    const rotation = elem.rotation || 0;
+    const flipH    = elem.flipH    || elem.flipped || false;
+    const flipV    = elem.flipV    || false;
+    const zIndex   = elem.zIndex   || 1;
+    const elemColor = elem.color   || null;
+ 
     try {
-      let img = sharp(imageBuffer)
-        .resize(sizePx, sizePx, {
-          fit:        "contain",
-          background: { r: 0, g: 0, b: 0, alpha: 0 },
-        });
-
-      if (flipH) img = img.flop();
-      if (flipV) img = img.flip();
-
-      // ── NEW: apply color tint for colorable elements ──────
-      // Skip tinting for white (F2F3F3 / FFFFFF) — no-op preserves
-      // the original white image without unnecessary processing.
+      // ── Step 1: Apply color tint FIRST on raw fetched buffer ──
+      // Done before resize/flip/rotate to avoid Sharp chain ordering issues.
+      // applyColorTint preserves black outline pixels and transparent pixels.
+      let workingBuffer = imageBuffer;
+ 
       if (elemColor) {
         const normalised = elemColor.replace("#", "").toUpperCase();
         const isWhite    = normalised === "F2F3F3" || normalised === "FFFFFF";
         if (!isWhite) {
-          const r = parseInt(normalised.slice(0, 2), 16);
-          const g = parseInt(normalised.slice(2, 4), 16);
-          const b = parseInt(normalised.slice(4, 6), 16);
-          console.log(`[render] Tinting element ${elem.elementId || elem.elemId} with #${normalised} (${r},${g},${b})`);
-          img = img.tint({ r, g, b });
+          console.log(`[render] Tinting ${elem.elementId || elem.elemId} with #${normalised}`);
+          workingBuffer = await applyColorTint(imageBuffer, normalised);
         }
       }
-      // ── END color tint ────────────────────────────────────
-
+ 
+      // ── Step 2: Resize, flip, rotate as normal ─────────────
+      let img = sharp(workingBuffer)
+        .resize(sizePx, sizePx, {
+          fit:        "contain",
+          background: { r: 0, g: 0, b: 0, alpha: 0 },
+        });
+ 
+      if (flipH) img = img.flop();
+      if (flipV) img = img.flip();
+ 
       if (rotation !== 0) {
         img = img.rotate(rotation, {
           background: { r: 0, g: 0, b: 0, alpha: 0 },
         });
       }
-
+ 
       const processedBuffer = await img.png().toBuffer();
       const meta            = await sharp(processedBuffer).metadata();
       const adjustedX       = Math.round(posX * canvasW - meta.width  / 2);
       const adjustedY       = Math.round(posY * canvasH - meta.height / 2);
-
+ 
       layers.push({
         input:  processedBuffer,
         left:   adjustedX,
@@ -330,7 +379,7 @@ async function renderSticker(composition) {
       continue;
     }
   }
-
+ 
   if (layers.length === 0) {
     console.warn("[render] No layers rendered — returning transparent canvas");
     return await sharp({
@@ -342,13 +391,12 @@ async function renderSticker(composition) {
       },
     }).png().toBuffer();
   }
-
+ 
   // Sort by zIndex — first = bottom, last = top
   layers.sort((a, b) => (a.zIndex || 1) - (b.zIndex || 1));
-
-  // Strip zIndex before passing to sharp
+ 
   const sharpLayers = layers.map(({ input, left, top }) => ({ input, left, top }));
-
+ 
   const composited = await sharp({
     create: {
       width:      canvasW,
@@ -360,17 +408,17 @@ async function renderSticker(composition) {
   .composite(sharpLayers)
   .png()
   .toBuffer();
-
+ 
   const { data: rawData, info } = await sharp(composited)
     .raw()
     .toBuffer({ resolveWithObject: true });
-
+ 
   const { width, height, channels } = info;
   const totalPixels = width * height;
   const offsetMask  = new Uint8Array(totalPixels);
   const outlineMask = new Uint8Array(totalPixels);
   const r           = OFFSET_WIDTH + OUTLINE_WIDTH;
-
+ 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const alpha = rawData[(y * width + x) * channels + 3];
@@ -388,15 +436,14 @@ async function renderSticker(composition) {
       }
     }
   }
-
+ 
   const finalData = Buffer.alloc(totalPixels * 4);
-
+ 
   for (let i = 0; i < totalPixels; i++) {
-    const isOutline = outlineMask[i] > 0 && offsetMask[i] === 0;
     const isOffset  = offsetMask[i] > 0;
     const origAlpha = rawData[i * channels + 3];
     const hasOrig   = origAlpha > 10;
-
+ 
     if (hasOrig) {
       finalData[i * 4]     = rawData[i * channels];
       finalData[i * 4 + 1] = rawData[i * channels + 1];
@@ -411,12 +458,12 @@ async function renderSticker(composition) {
       finalData[i * 4 + 3] = 0;
     }
   }
-
+ 
   return await sharp(finalData, {
     raw: { width, height, channels: 4 },
   }).png().toBuffer();
 }
-
+ 
 // ============================================================
 // VERCEL HANDLER
 // ============================================================
@@ -424,51 +471,51 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin",  ALLOWED_ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-
+ 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
-
+ 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
-
+ 
   const authHeader = req.headers["authorization"];
   const SECRET_KEY = process.env.RENDER_SECRET_KEY;
   if (SECRET_KEY && authHeader !== `Bearer ${SECRET_KEY}`) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-
+ 
   let body;
   try {
     body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
   } catch {
     return res.status(400).json({ error: "Invalid JSON body" });
   }
-
+ 
   const composition = body && body.composition;
   if (!composition) {
     return res.status(400).json({ error: "Missing composition in request body" });
   }
-
+ 
   const displayName = body.displayName || "StickerCo Sticker";
-
+ 
   try {
     console.log(`[render] Rendering sticker with ${
       (composition.elements || []).length} element(s)`);
-
+ 
     const pngBuffer  = await renderSticker(composition);
     console.log(`[render] PNG rendered — ${pngBuffer.length} bytes — uploading to Roblox`);
-
+ 
     const rbxAssetId = await uploadToRoblox(pngBuffer, displayName);
     console.log(`[render] Complete — ${rbxAssetId}`);
-
+ 
     return res.status(200).json({
       success:    true,
       rbxAssetId: rbxAssetId,
       size:       pngBuffer.length,
     });
-
+ 
   } catch (err) {
     console.error("[render] Error:", err);
     return res.status(500).json({
@@ -477,3 +524,4 @@ export default async function handler(req, res) {
     });
   }
 }
+ 
