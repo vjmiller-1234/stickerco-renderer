@@ -60,6 +60,18 @@ const ELEMENT_IMAGE_MAP = {
   "BasicBackgroundShapes-Rectangle":      "BasicBackgroundShapes-Rectangle.png",
   "BasicBackgroundShapes-Square":         "BasicBackgroundShapes-Square.png",
   "BasicBackgroundShapes-Circle":         "BasicBackgroundShapes-Circle.png",
+  "KawaiiIceCream-BearCone":              "KawaiiIceCream-BearCone.png",
+  "KawaiiIceCream-CatCone":               "KawaiiIceCream-CatCone.png",
+  "KawaiiIceCream-IceCreamCone":          "KawaiiIceCream-IceCreamCone.png",
+  "KawaiiIceCream-MacarronPopsicle":      "KawaiiIceCream-MacarronPopsicle.png",
+  "KawaiiIceCream-MintPopsicle":          "KawaiiIceCream-MintPopsicle.png",
+  "KawaiiIceCream-PandaPopsicle":         "KawaiiIceCream-PandaPopsicle.png",
+  "KawaiiIceCream-RainbowCone":           "KawaiiIceCream-RainbowCone.png",
+  "KawaiiIceCream-RainbowPopsicle":       "KawaiiIceCream-RainbowPopsicle.png",
+  "KawaiiIceCream-StrawberryCone":        "KawaiiIceCream-StrawberryCone.png",
+  "KawaiiIceCream-Sundae":                "KawaiiIceCream-Sundae.png",
+  "KawaiiIceCream-WaffleBowl":            "KawaiiIceCream-WaffleBowl.png",
+  "KawaiiIceCream-WatermelonPopsicle":    "KawaiiIceCream-WatermelonPopsicle.png",
 };
 
 const BASE_URL       = process.env.ASSET_BASE_URL || "http://localhost:3000";
