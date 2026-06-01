@@ -72,6 +72,18 @@ const ELEMENT_IMAGE_MAP = {
   "KawaiiIceCream-Sundae":                "KawaiiIceCream-Sundae.png",
   "KawaiiIceCream-WaffleBowl":            "KawaiiIceCream-WaffleBowl.png",
   "KawaiiIceCream-WatermelonPopsicle":    "KawaiiIceCream-WatermelonPopsicle.png",
+  "Beach-BeachBall":                      "Beach-BeachBall.png",
+  "Beach-Bucket":                         "Beach-Bucket.png",
+  "Beach-Chair":                          "Beach-Chair.png",
+  "Beach-Cloud":                          "Beach-Cloud.png",
+  "Beach-PalmTree":                       "Beach-PalmTree.png",
+  "Beach-Sand":                           "Beach-Sand.png",
+  "Beach-SandCastle":                     "Beach-SandCastle.png",
+  "Beach-Sun":                            "Beach-Sun.png",
+  "Beach-Sunglasses":                     "Beach-Sunglasses.png",
+  "Beach-Surfboard":                      "Beach-Surfboard.png",
+  "Beach-Towel":                          "Beach-Towel.png",
+  "Beach-Umbrella":                       "Beach-Umbrella.png",
 };
 
 const BASE_URL       = process.env.ASSET_BASE_URL || "http://localhost:3000";
