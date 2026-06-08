@@ -725,9 +725,9 @@ async function renderSticker(composition) {
   // Kraft paper finish: offset is cream (245, 235, 215) instead of
   // pure white. This is the only change for kraft — same size,
   // same shape, same trimming logic, just a different color.
-  const offsetR = paperFinish === "kraft" ? 245 : 255;
-  const offsetG = paperFinish === "kraft" ? 235 : 255;
-  const offsetB = paperFinish === "kraft" ? 215 : 255;
+  const offsetR = paperFinish === "kraft" ? 230 : 255;
+  const offsetG = paperFinish === "kraft" ? 221 : 255;
+  const offsetB = paperFinish === "kraft" ? 202 : 255;
 
   const finalData = Buffer.alloc(totalPixels * 4);
 
