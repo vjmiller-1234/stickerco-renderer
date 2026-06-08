@@ -8,13 +8,7 @@ const OUTLINE_WIDTH  = 3;
 const OFFSET_WIDTH   = 15;
 const ALLOWED_ORIGIN = "*";
 
-// Padding applied after trimming, as a fraction of the trimmed
-// content size. 0.08 = 8% breathing room on each side.
 const TRIM_PADDING_FRACTION = 0.08;
-
-// Minimum content size after trimming (px). If trimmed content
-// is smaller than this, we don't upscale beyond this threshold
-// to avoid blurry output from tiny canvas compositions.
 const MIN_CONTENT_SIZE = 200;
 
 const ELEMENT_IMAGE_MAP = {
@@ -131,14 +125,6 @@ async function fetchImage(url) {
 
 // ============================================================
 // COLOR TINTING
-// Applies a color tint to a PNG buffer while preserving:
-//   - Black/dark pixels (outline) — stays dark
-//   - Transparent pixels — stays transparent
-//   - White pixels — becomes the target color
-//   - Mid-tone pixels — proportionally tinted
-//
-// This is done via per-pixel manipulation rather than Sharp's
-// tint() chain to avoid ordering issues with resize/flip/rotate.
 // ============================================================
 async function applyColorTint(pngBuffer, hexColor) {
   const normalised = hexColor.replace("#", "").toUpperCase();
@@ -257,9 +243,8 @@ async function autocropAndRepad(pngBuffer, targetSize) {
 // ============================================================
 // PAPER FINISH EFFECTS
 // Applied after white offset pass on the completed sticker.
-// Each finish composites an effect over the entire sticker image
-// including the white border area. The sticker image itself is
-// never modified — only the white offset border area changes.
+// The sticker image content is never modified — only the white
+// offset border area and transparent areas are affected.
 // ============================================================
 
 // Glossy — boosts saturation and contrast, adds soft white
@@ -285,10 +270,8 @@ async function applyGlossy(pngBuffer) {
       const a = data[i * channels + 3];
 
       if (a > 10) {
-        // Distance from top-left — creates radial highlight
         const dist      = Math.sqrt((x / width) ** 2 + (y / height) ** 2);
         const highlight = Math.max(0, 1 - dist * 2.2) * 0.25;
-
         out[i * 4]     = Math.min(255, data[i * channels]     + highlight * 255);
         out[i * 4 + 1] = Math.min(255, data[i * channels + 1] + highlight * 255);
         out[i * 4 + 2] = Math.min(255, data[i * channels + 2] + highlight * 255);
@@ -304,46 +287,52 @@ async function applyGlossy(pngBuffer) {
   }).png().toBuffer();
 }
 
-// Kraft — composites sticker onto warm brown kraft paper background.
-// Transparent areas (including white offset) become kraft-toned.
+// Kraft — replaces the white offset border AND transparent areas
+// with a soft parchment/kraft paper color.
+// RGB(245, 235, 215) — warm cream, like natural parchment paper.
+// The sticker image content passes through unchanged.
 async function applyKraft(pngBuffer) {
   const { width, height } = await sharp(pngBuffer).metadata();
-
-  const kraftBackground = await sharp({
-    create: {
-      width, height,
-      channels: 4,
-      background: { r: 186, g: 147, b: 108, alpha: 255 },
-    },
-  }).png().toBuffer();
-
   const { data, info } = await sharp(pngBuffer)
     .ensureAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  const { data: bgData } = await sharp(kraftBackground)
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const out      = Buffer.alloc(width * height * 4);
   const channels = info.channels;
+  const out      = Buffer.alloc(width * height * 4);
+
+  // Soft parchment/kraft color — warm cream, not dark tan
+  const kraftR = 245, kraftG = 235, kraftB = 215;
 
   for (let i = 0; i < width * height; i++) {
-    const origAlpha = data[i * channels + 3];
-    if (origAlpha > 10) {
-      // Original sticker pixel — keep as-is
-      out[i * 4]     = data[i * channels];
-      out[i * 4 + 1] = data[i * channels + 1];
-      out[i * 4 + 2] = data[i * channels + 2];
-      out[i * 4 + 3] = origAlpha;
-    } else {
-      // Transparent area — show kraft background
-      out[i * 4]     = bgData[i * 4];
-      out[i * 4 + 1] = bgData[i * 4 + 1];
-      out[i * 4 + 2] = bgData[i * 4 + 2];
+    const origA = data[i * channels + 3];
+    const origR = data[i * channels];
+    const origG = data[i * channels + 1];
+    const origB = data[i * channels + 2];
+
+    if (origA <= 10) {
+      // Fully transparent — fill with kraft color
+      out[i * 4]     = kraftR;
+      out[i * 4 + 1] = kraftG;
+      out[i * 4 + 2] = kraftB;
       out[i * 4 + 3] = 255;
+    } else {
+      // Detect white offset pixels — high RGB values, full alpha
+      const isWhiteOffset = origR > 200 && origG > 200 && origB > 200 && origA > 200;
+
+      if (isWhiteOffset) {
+        // Replace white offset with soft kraft parchment color
+        out[i * 4]     = kraftR;
+        out[i * 4 + 1] = kraftG;
+        out[i * 4 + 2] = kraftB;
+        out[i * 4 + 3] = 255;
+      } else {
+        // Sticker content — keep as-is
+        out[i * 4]     = origR;
+        out[i * 4 + 1] = origG;
+        out[i * 4 + 2] = origB;
+        out[i * 4 + 3] = origA;
+      }
     }
   }
 
@@ -397,7 +386,6 @@ async function applyHolographic(pngBuffer) {
         continue;
       }
 
-      // White offset area: high RGB, full alpha
       const isWhiteArea = origR > 200 && origG > 200 && origB > 200 && origA > 200;
 
       if (isWhiteArea) {
@@ -459,9 +447,8 @@ async function applyFoil(pngBuffer, variant) {
       const isWhiteArea = origR > 200 && origG > 200 && origB > 200 && origA > 200;
 
       if (isWhiteArea) {
-        // Diagonal sweep creates metallic sheen with multi-band shimmer
-        const t    = (x + y) / (width + height);
-        const wave = Math.sin(t * Math.PI * 6) * 0.5 + 0.5;
+        const t     = (x + y) / (width + height);
+        const wave  = Math.sin(t * Math.PI * 6) * 0.5 + 0.5;
         const blend = 0.55;
         out[i * 4]     = Math.round(origR * (1 - blend) + (shR + (hiR - shR) * wave) * blend);
         out[i * 4 + 1] = Math.round(origG * (1 - blend) + (shG + (hiG - shG) * wave) * blend);
@@ -565,7 +552,6 @@ async function uploadToRoblox(pngBuffer, displayName) {
     throw new Error(`No operation path: ${responseText}`);
   }
 
-  // Poll until complete
   for (let attempt = 1; attempt <= 10; attempt++) {
     await new Promise(resolve => setTimeout(resolve, 2000));
 
@@ -644,7 +630,7 @@ async function renderSticker(composition) {
   const canvasW     = (composition.canvasSize && composition.canvasSize[0]) || CANVAS_SIZE;
   const canvasH     = (composition.canvasSize && composition.canvasSize[1]) || CANVAS_SIZE;
   const elements    = composition.elements || [];
-  const paperFinish = composition.paperFinish || "standard";
+  const paperFinish = composition.paperFinish || composition.finish || "standard";
   const layers      = [];
 
   for (const elem of elements) {
@@ -676,7 +662,6 @@ async function renderSticker(composition) {
     const elemColor = elem.color    || null;
 
     try {
-      // Step 1: Apply color tint FIRST on raw fetched buffer
       let workingBuffer = imageBuffer;
 
       if (elemColor) {
@@ -688,7 +673,6 @@ async function renderSticker(composition) {
         }
       }
 
-      // Step 2: Resize, flip, rotate
       let img = sharp(workingBuffer)
         .resize(sizePx, sizePx, {
           fit:        "contain",
@@ -733,12 +717,10 @@ async function renderSticker(composition) {
     }).png().toBuffer();
   }
 
-  // Sort by zIndex — first = bottom, last = top
   layers.sort((a, b) => (a.zIndex || 1) - (b.zIndex || 1));
 
   const sharpLayers = layers.map(({ input, left, top }) => ({ input, left, top }));
 
-  // Composite all elements onto the canvas
   const composited = await sharp({
     create: {
       width:      canvasW,
@@ -755,7 +737,6 @@ async function renderSticker(composition) {
   const cropped = await autocropAndRepad(composited, CANVAS_SIZE);
   // ── END AUTOCROP ──────────────────────────────────────────
 
-  // Apply white offset on the cropped image
   const { data: rawData, info } = await sharp(cropped)
     .raw()
     .toBuffer({ resolveWithObject: true });
@@ -879,7 +860,7 @@ export default async function handler(req, res) {
   try {
     console.log(`[render] Rendering sticker with ${
       (composition.elements || []).length} element(s), finish: ${
-      composition.paperFinish || "standard"}`);
+      composition.paperFinish || composition.finish || "standard"}`);
 
     const pngBuffer  = await renderSticker(composition);
     console.log(`[render] PNG rendered — ${pngBuffer.length} bytes — uploading to Roblox`);
