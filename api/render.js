@@ -125,6 +125,11 @@ async function fetchImage(url) {
 
 // ============================================================
 // COLOR TINTING
+// Applies a color tint to a PNG buffer while preserving:
+//   - Black/dark pixels (outline) — stays dark
+//   - Transparent pixels — stays transparent
+//   - White pixels — becomes the target color
+//   - Mid-tone pixels — proportionally tinted
 // ============================================================
 async function applyColorTint(pngBuffer, hexColor) {
   const normalised = hexColor.replace("#", "").toUpperCase();
@@ -167,6 +172,8 @@ async function applyColorTint(pngBuffer, hexColor) {
 
 // ============================================================
 // AUTOCROP + REPAD
+// Trims transparent pixels, re-pads with breathing room,
+// resizes to target square. Applied before offset pass.
 // ============================================================
 async function autocropAndRepad(pngBuffer, targetSize) {
   const { data, info } = await sharp(pngBuffer)
@@ -242,9 +249,10 @@ async function autocropAndRepad(pngBuffer, targetSize) {
 
 // ============================================================
 // PAPER FINISH EFFECTS
-// Applied after white offset pass on the completed sticker.
-// The sticker image content is never modified — only the white
-// offset border area and transparent areas are affected.
+// Applied after the offset pass on the completed sticker.
+// Kraft is handled directly in the offset pass (offset color
+// changes to cream — no post-processing needed).
+// All other finishes are applied here as post-processing.
 // ============================================================
 
 // Glossy — boosts saturation and contrast, adds soft white
@@ -287,62 +295,8 @@ async function applyGlossy(pngBuffer) {
   }).png().toBuffer();
 }
 
-// Kraft — replaces the white offset border AND transparent areas
-// with a soft parchment/kraft paper color.
-// RGB(245, 235, 215) — warm cream, like natural parchment paper.
-// The sticker image content passes through unchanged.
-async function applyKraft(pngBuffer) {
-  const { width, height } = await sharp(pngBuffer).metadata();
-  const { data, info } = await sharp(pngBuffer)
-    .ensureAlpha()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-
-  const channels = info.channels;
-  const out      = Buffer.alloc(width * height * 4);
-
-  // Soft parchment/kraft color — warm cream, not dark tan
-  const kraftR = 245, kraftG = 235, kraftB = 215;
-
-  for (let i = 0; i < width * height; i++) {
-    const origA = data[i * channels + 3];
-    const origR = data[i * channels];
-    const origG = data[i * channels + 1];
-    const origB = data[i * channels + 2];
-
-    if (origA <= 10) {
-      // Fully transparent — fill with kraft color
-      out[i * 4]     = kraftR;
-      out[i * 4 + 1] = kraftG;
-      out[i * 4 + 2] = kraftB;
-      out[i * 4 + 3] = 255;
-    } else {
-      // Detect white offset pixels — high RGB values, full alpha
-      const isWhiteOffset = origR > 200 && origG > 200 && origB > 200 && origA > 200;
-
-      if (isWhiteOffset) {
-        // Replace white offset with soft kraft parchment color
-        out[i * 4]     = kraftR;
-        out[i * 4 + 1] = kraftG;
-        out[i * 4 + 2] = kraftB;
-        out[i * 4 + 3] = 255;
-      } else {
-        // Sticker content — keep as-is
-        out[i * 4]     = origR;
-        out[i * 4 + 1] = origG;
-        out[i * 4 + 2] = origB;
-        out[i * 4 + 3] = origA;
-      }
-    }
-  }
-
-  return await sharp(out, {
-    raw: { width, height, channels: 4 },
-  }).png().toBuffer();
-}
-
-// Holographic — applies rainbow gradient over the white offset
-// area only, leaving the sticker image content untouched.
+// Holographic — applies rainbow gradient over the white/cream
+// offset area only, leaving sticker image content untouched.
 async function applyHolographic(pngBuffer) {
   const { width, height } = await sharp(pngBuffer).metadata();
   const { data, info } = await sharp(pngBuffer)
@@ -386,9 +340,10 @@ async function applyHolographic(pngBuffer) {
         continue;
       }
 
-      const isWhiteArea = origR > 200 && origG > 200 && origB > 200 && origA > 200;
+      // Detect offset area — high RGB, full alpha (white or cream)
+      const isOffsetArea = origR > 200 && origG > 195 && origA > 200;
 
-      if (isWhiteArea) {
+      if (isOffsetArea) {
         const hue          = (x / width) * 360 + (y / height) * 120;
         const [hr, hg, hb] = hueToRgb(hue);
         const blend        = 0.35;
@@ -410,7 +365,7 @@ async function applyHolographic(pngBuffer) {
   }).png().toBuffer();
 }
 
-// Foil — metallic diagonal sweep on the white offset area.
+// Foil — metallic diagonal sweep on the offset area.
 // Gold: warm yellow-orange metallic bands.
 // Silver: cool grey-white metallic bands.
 async function applyFoil(pngBuffer, variant) {
@@ -444,9 +399,10 @@ async function applyFoil(pngBuffer, variant) {
         continue;
       }
 
-      const isWhiteArea = origR > 200 && origG > 200 && origB > 200 && origA > 200;
+      // Detect offset area — high RGB, full alpha (white or cream)
+      const isOffsetArea = origR > 200 && origG > 195 && origA > 200;
 
-      if (isWhiteArea) {
+      if (isOffsetArea) {
         const t     = (x + y) / (width + height);
         const wave  = Math.sin(t * Math.PI * 6) * 0.5 + 0.5;
         const blend = 0.55;
@@ -469,14 +425,15 @@ async function applyFoil(pngBuffer, variant) {
 }
 
 // ── Paper finish dispatcher ───────────────────────────────────
+// Kraft is NOT handled here — it is applied directly in the
+// offset pass inside renderSticker (offset color = cream).
 async function applyPaperFinish(pngBuffer, finish) {
   switch (finish) {
     case "glossy":      return await applyGlossy(pngBuffer);
-    case "kraft":       return await applyKraft(pngBuffer);
     case "holographic": return await applyHolographic(pngBuffer);
     case "foil_gold":   return await applyFoil(pngBuffer, "foil_gold");
     case "foil_silver": return await applyFoil(pngBuffer, "foil_silver");
-    default:            return pngBuffer;  // standard — no effect
+    default:            return pngBuffer;
   }
 }
 
@@ -718,7 +675,6 @@ async function renderSticker(composition) {
   }
 
   layers.sort((a, b) => (a.zIndex || 1) - (b.zIndex || 1));
-
   const sharpLayers = layers.map(({ input, left, top }) => ({ input, left, top }));
 
   const composited = await sharp({
@@ -765,6 +721,14 @@ async function renderSticker(composition) {
     }
   }
 
+  // ── Offset color — kraft uses soft cream, all others use white ──
+  // Kraft paper finish: offset is cream (245, 235, 215) instead of
+  // pure white. This is the only change for kraft — same size,
+  // same shape, same trimming logic, just a different color.
+  const offsetR = paperFinish === "kraft" ? 245 : 255;
+  const offsetG = paperFinish === "kraft" ? 235 : 255;
+  const offsetB = paperFinish === "kraft" ? 215 : 255;
+
   const finalData = Buffer.alloc(totalPixels * 4);
 
   for (let i = 0; i < totalPixels; i++) {
@@ -778,9 +742,9 @@ async function renderSticker(composition) {
       finalData[i * 4 + 2] = rawData[i * channels + 2];
       finalData[i * 4 + 3] = origAlpha;
     } else if (isOffset) {
-      finalData[i * 4]     = 255;
-      finalData[i * 4 + 1] = 255;
-      finalData[i * 4 + 2] = 255;
+      finalData[i * 4]     = offsetR;
+      finalData[i * 4 + 1] = offsetG;
+      finalData[i * 4 + 2] = offsetB;
       finalData[i * 4 + 3] = 255;
     } //else if (isOutline) {
       //finalData[i * 4]     = 0;
@@ -793,15 +757,15 @@ async function renderSticker(composition) {
     }
   }
 
-  // Build output buffer from final pixel data
   let outputBuffer = await sharp(finalData, {
     raw: { width, height, channels: 4 },
   }).png().toBuffer();
 
-  // ── PAPER FINISH ─────────────────────────────────────────
-  // Applied after white offset so the finish covers the full
-  // sticker including the white border area.
-  if (paperFinish && paperFinish !== "standard") {
+  // ── PAPER FINISH (post-processing) ───────────────────────
+  // Kraft is handled above in the offset pass — not here.
+  // All other finishes are applied as post-processing over
+  // the completed sticker including its offset border.
+  if (paperFinish && paperFinish !== "standard" && paperFinish !== "kraft") {
     console.log(`[render] Applying paper finish: ${paperFinish}`);
     outputBuffer = await applyPaperFinish(outputBuffer, paperFinish);
   }
