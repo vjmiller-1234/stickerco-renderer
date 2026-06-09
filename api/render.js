@@ -172,10 +172,15 @@ async function applyColorTint(pngBuffer, hexColor) {
 
 // ============================================================
 // AUTOCROP + REPAD
-// Trims transparent pixels, re-pads with breathing room,
-// resizes to target square. Applied before offset pass.
+// Trims transparent pixels to find the tight bounding box of
+// actual content, then re-pads with breathing room.
+//
+// Deliberately does NOT resize to CANVAS_SIZE here.
+// The final resize in renderSticker handles scaling, and that
+// resampling step across the white offset edge is what produces
+// the natural soft grey fringe that defines the sticker.
 // ============================================================
-async function autocropAndRepad(pngBuffer, targetSize) {
+async function autocropAndRepad(pngBuffer) {
   const { data, info } = await sharp(pngBuffer)
     .ensureAlpha()
     .raw()
@@ -212,6 +217,10 @@ async function autocropAndRepad(pngBuffer, targetSize) {
   const contentSize = Math.max(contentW, contentH);
   const padding     = Math.round(contentSize * TRIM_PADDING_FRACTION);
 
+  // Crop to bounding box and add padding.
+  // Do NOT resize here — the final resize in renderSticker does
+  // the scaling and produces the soft grey fringe as a natural
+  // resampling artifact across the white offset edge.
   const cropped = await sharp(pngBuffer)
     .extract({
       left:   Math.max(0, minX),
@@ -229,22 +238,8 @@ async function autocropAndRepad(pngBuffer, targetSize) {
     .png()
     .toBuffer();
 
-  const croppedMeta  = await sharp(cropped).metadata();
-  const croppedSize  = Math.max(croppedMeta.width, croppedMeta.height);
-  const finalSize    = croppedSize < MIN_CONTENT_SIZE
-    ? Math.min(targetSize, MIN_CONTENT_SIZE + padding * 2)
-    : targetSize;
-
-  const repadded = await sharp(cropped)
-    .resize(finalSize, finalSize, {
-      fit:        "contain",
-      background: { r: 0, g: 0, b: 0, alpha: 0 },
-    })
-    .png()
-    .toBuffer();
-
-  console.log(`[render] Autocrop: repadded to ${finalSize}×${finalSize}`);
-  return repadded;
+  console.log(`[render] Autocrop: cropped and padded, deferring resize to final step`);
+  return cropped;
 }
 
 // ============================================================
@@ -690,7 +685,10 @@ async function renderSticker(composition) {
   .toBuffer();
 
   // ── AUTOCROP + REPAD ──────────────────────────────────────
-  const cropped = await autocropAndRepad(composited, CANVAS_SIZE);
+  // Crops to content bounding box and adds padding.
+  // Does NOT resize — final resize below handles scaling and
+  // produces the natural soft grey fringe at the sticker edge.
+  const cropped = await autocropAndRepad(composited);
   // ── END AUTOCROP ──────────────────────────────────────────
 
   const { data: rawData, info } = await sharp(cropped)
@@ -768,10 +766,12 @@ async function renderSticker(composition) {
   }
   // ── END PAPER FINISH ─────────────────────────────────────
 
-  // Always resize through Sharp to CANVAS_SIZE — this resampling
-  // step naturally produces the soft grey fringe at the sticker
-  // edge by blending the offset border against the transparent
-  // background. Do not skip this step even if dimensions match.
+  // ── FINAL RESIZE ─────────────────────────────────────────
+  // Always resize to CANVAS_SIZE regardless of current dimensions.
+  // This resampling step blends the offset edge against the
+  // transparent background, naturally producing the soft grey
+  // fringe that gives stickers their defined edge appearance.
+  // Do not add a conditional — always run this step.
   return await sharp(outputBuffer)
     .resize(CANVAS_SIZE, CANVAS_SIZE, {
       fit:        "contain",
@@ -779,6 +779,7 @@ async function renderSticker(composition) {
     })
     .png()
     .toBuffer();
+  // ── END FINAL RESIZE ─────────────────────────────────────
 }
 
 // ============================================================
