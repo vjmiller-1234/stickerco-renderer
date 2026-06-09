@@ -8,13 +8,7 @@ const OUTLINE_WIDTH  = 3;
 const OFFSET_WIDTH   = 15;
 const ALLOWED_ORIGIN = "*";
 
-// Padding applied after trimming, as a fraction of the trimmed
-// content size. 0.08 = 8% breathing room on each side.
 const TRIM_PADDING_FRACTION = 0.08;
-
-// Minimum content size after trimming (px). If trimmed content
-// is smaller than this, we don't upscale beyond this threshold
-// to avoid blurry output from tiny canvas compositions.
 const MIN_CONTENT_SIZE = 200;
 
 const ELEMENT_IMAGE_MAP = {
@@ -136,9 +130,6 @@ async function fetchImage(url) {
 //   - Transparent pixels — stays transparent
 //   - White pixels — becomes the target color
 //   - Mid-tone pixels — proportionally tinted
-//
-// This is done via per-pixel manipulation rather than Sharp's
-// tint() chain to avoid ordering issues with resize/flip/rotate.
 // ============================================================
 async function applyColorTint(pngBuffer, hexColor) {
   const normalised = hexColor.replace("#", "").toUpperCase();
@@ -161,17 +152,12 @@ async function applyColorTint(pngBuffer, hexColor) {
     const a = data[i * 4 + 3];
 
     if (a === 0) {
-      // Fully transparent — preserve as-is
       out[i * 4]     = 0;
       out[i * 4 + 1] = 0;
       out[i * 4 + 2] = 0;
       out[i * 4 + 3] = 0;
     } else {
-      // Luminance of original pixel (0.0 = black, 1.0 = white)
-      // Black pixels (outline) → luminance ≈ 0 → output stays near black
-      // White pixels (fill)    → luminance ≈ 1 → output becomes tint color
       const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-
       out[i * 4]     = Math.round(tr * lum);
       out[i * 4 + 1] = Math.round(tg * lum);
       out[i * 4 + 2] = Math.round(tb * lum);
@@ -186,19 +172,8 @@ async function applyColorTint(pngBuffer, hexColor) {
 
 // ============================================================
 // AUTOCROP + REPAD
-// Trims transparent pixels from the composited sticker to find
-// the tight bounding box of actual content, then re-pads to a
-// consistent square with breathing room before applying the
-// white offset. This ensures the white offset is always the
-// same visual thickness regardless of canvas fill amount.
-//
-// Steps:
-//   1. Scan all pixels to find bounding box of non-transparent content
-//   2. If nothing found, return original buffer unchanged
-//   3. Crop to bounding box
-//   4. Add padding (TRIM_PADDING_FRACTION of content size each side)
-//   5. Resize to a working square (respecting MIN_CONTENT_SIZE)
-//   6. Return as PNG buffer ready for offset/outline pass
+// Trims transparent pixels, re-pads with breathing room,
+// resizes to target square. Applied before offset pass.
 // ============================================================
 async function autocropAndRepad(pngBuffer, targetSize) {
   const { data, info } = await sharp(pngBuffer)
@@ -208,7 +183,6 @@ async function autocropAndRepad(pngBuffer, targetSize) {
 
   const { width, height, channels } = info;
 
-  // Find bounding box of non-transparent pixels
   let minX = width,  maxX = 0;
   let minY = height, maxY = 0;
   let hasContent = false;
@@ -235,14 +209,9 @@ async function autocropAndRepad(pngBuffer, targetSize) {
   const contentH = maxY - minY + 1;
   console.log(`[render] Autocrop: content bounding box ${contentW}×${contentH} at (${minX},${minY})`);
 
-  // Calculate padding — based on the larger content dimension
   const contentSize = Math.max(contentW, contentH);
   const padding     = Math.round(contentSize * TRIM_PADDING_FRACTION);
 
-  // Crop to bounding box then extend with transparent padding
-  // Sharp's extract + extend approach:
-  //   extract: crops to the bounding box
-  //   extend:  adds transparent border on all sides
   const cropped = await sharp(pngBuffer)
     .extract({
       left:   Math.max(0, minX),
@@ -260,8 +229,6 @@ async function autocropAndRepad(pngBuffer, targetSize) {
     .png()
     .toBuffer();
 
-  // Resize to square output — contain within targetSize, preserving aspect ratio
-  // Respect MIN_CONTENT_SIZE: don't upscale tiny content beyond quality threshold
   const croppedMeta  = await sharp(cropped).metadata();
   const croppedSize  = Math.max(croppedMeta.width, croppedMeta.height);
   const finalSize    = croppedSize < MIN_CONTENT_SIZE
@@ -278,6 +245,196 @@ async function autocropAndRepad(pngBuffer, targetSize) {
 
   console.log(`[render] Autocrop: repadded to ${finalSize}×${finalSize}`);
   return repadded;
+}
+
+// ============================================================
+// PAPER FINISH EFFECTS
+// Applied after the offset pass on the completed sticker.
+// Kraft is handled directly in the offset pass (offset color
+// changes to cream — no post-processing needed).
+// All other finishes are applied here as post-processing.
+// ============================================================
+
+// Glossy — boosts saturation and contrast, adds soft white
+// highlight in top-left corner to simulate light reflection
+async function applyGlossy(pngBuffer) {
+  const enhanced = await sharp(pngBuffer)
+    .modulate({ saturation: 1.3, brightness: 1.05 })
+    .png()
+    .toBuffer();
+
+  const { width, height } = await sharp(enhanced).metadata();
+  const { data, info } = await sharp(enhanced)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const out      = Buffer.alloc(width * height * 4);
+  const channels = info.channels;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = y * width + x;
+      const a = data[i * channels + 3];
+
+      if (a > 10) {
+        const dist      = Math.sqrt((x / width) ** 2 + (y / height) ** 2);
+        const highlight = Math.max(0, 1 - dist * 2.2) * 0.25;
+        out[i * 4]     = Math.min(255, data[i * channels]     + highlight * 255);
+        out[i * 4 + 1] = Math.min(255, data[i * channels + 1] + highlight * 255);
+        out[i * 4 + 2] = Math.min(255, data[i * channels + 2] + highlight * 255);
+        out[i * 4 + 3] = a;
+      } else {
+        out[i * 4 + 3] = 0;
+      }
+    }
+  }
+
+  return await sharp(out, {
+    raw: { width, height, channels: 4 },
+  }).png().toBuffer();
+}
+
+// Holographic — applies rainbow gradient over the white/cream
+// offset area only, leaving sticker image content untouched.
+async function applyHolographic(pngBuffer) {
+  const { width, height } = await sharp(pngBuffer).metadata();
+  const { data, info } = await sharp(pngBuffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const channels = info.channels;
+  const out      = Buffer.alloc(width * height * 4);
+
+  function hueToRgb(h) {
+    h = h % 360;
+    const s = 0.9, l = 0.65;
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+    const m = l - c / 2;
+    let r = 0, g = 0, b = 0;
+    if      (h < 60)  { r = c; g = x; b = 0; }
+    else if (h < 120) { r = x; g = c; b = 0; }
+    else if (h < 180) { r = 0; g = c; b = x; }
+    else if (h < 240) { r = 0; g = x; b = c; }
+    else if (h < 300) { r = x; g = 0; b = c; }
+    else              { r = c; g = 0; b = x; }
+    return [
+      Math.round((r + m) * 255),
+      Math.round((g + m) * 255),
+      Math.round((b + m) * 255),
+    ];
+  }
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i     = y * width + x;
+      const origA = data[i * channels + 3];
+      const origR = data[i * channels];
+      const origG = data[i * channels + 1];
+      const origB = data[i * channels + 2];
+
+      if (origA <= 10) {
+        out[i * 4 + 3] = 0;
+        continue;
+      }
+
+      // Detect offset area — high RGB, full alpha (white or cream)
+      const isOffsetArea = origR > 200 && origG > 195 && origA > 200;
+
+      if (isOffsetArea) {
+        const hue          = (x / width) * 360 + (y / height) * 120;
+        const [hr, hg, hb] = hueToRgb(hue);
+        const blend        = 0.35;
+        out[i * 4]     = Math.round(origR * (1 - blend) + hr * blend);
+        out[i * 4 + 1] = Math.round(origG * (1 - blend) + hg * blend);
+        out[i * 4 + 2] = Math.round(origB * (1 - blend) + hb * blend);
+        out[i * 4 + 3] = origA;
+      } else {
+        out[i * 4]     = origR;
+        out[i * 4 + 1] = origG;
+        out[i * 4 + 2] = origB;
+        out[i * 4 + 3] = origA;
+      }
+    }
+  }
+
+  return await sharp(out, {
+    raw: { width, height, channels: 4 },
+  }).png().toBuffer();
+}
+
+// Foil — metallic diagonal sweep on the offset area.
+// Gold: warm yellow-orange metallic bands.
+// Silver: cool grey-white metallic bands.
+async function applyFoil(pngBuffer, variant) {
+  const { width, height } = await sharp(pngBuffer).metadata();
+  const { data, info } = await sharp(pngBuffer)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const channels = info.channels;
+  const out      = Buffer.alloc(width * height * 4);
+
+  const isGold = variant === "foil_gold";
+  const hiR    = isGold ? 255 : 240;
+  const hiG    = isGold ? 220 : 240;
+  const hiB    = isGold ? 100 : 250;
+  const shR    = isGold ? 180 : 160;
+  const shG    = isGold ? 130 : 160;
+  const shB    = isGold ? 30  : 175;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i     = y * width + x;
+      const origA = data[i * channels + 3];
+      const origR = data[i * channels];
+      const origG = data[i * channels + 1];
+      const origB = data[i * channels + 2];
+
+      if (origA <= 10) {
+        out[i * 4 + 3] = 0;
+        continue;
+      }
+
+      // Detect offset area — high RGB, full alpha (white or cream)
+      const isOffsetArea = origR > 200 && origG > 195 && origA > 200;
+
+      if (isOffsetArea) {
+        const t     = (x + y) / (width + height);
+        const wave  = Math.sin(t * Math.PI * 6) * 0.5 + 0.5;
+        const blend = 0.55;
+        out[i * 4]     = Math.round(origR * (1 - blend) + (shR + (hiR - shR) * wave) * blend);
+        out[i * 4 + 1] = Math.round(origG * (1 - blend) + (shG + (hiG - shG) * wave) * blend);
+        out[i * 4 + 2] = Math.round(origB * (1 - blend) + (shB + (hiB - shB) * wave) * blend);
+        out[i * 4 + 3] = origA;
+      } else {
+        out[i * 4]     = origR;
+        out[i * 4 + 1] = origG;
+        out[i * 4 + 2] = origB;
+        out[i * 4 + 3] = origA;
+      }
+    }
+  }
+
+  return await sharp(out, {
+    raw: { width, height, channels: 4 },
+  }).png().toBuffer();
+}
+
+// ── Paper finish dispatcher ───────────────────────────────────
+// Kraft is NOT handled here — it is applied directly in the
+// offset pass inside renderSticker (offset color = cream).
+async function applyPaperFinish(pngBuffer, finish) {
+  switch (finish) {
+    case "glossy":      return await applyGlossy(pngBuffer);
+    case "holographic": return await applyHolographic(pngBuffer);
+    case "foil_gold":   return await applyFoil(pngBuffer, "foil_gold");
+    case "foil_silver": return await applyFoil(pngBuffer, "foil_silver");
+    default:            return pngBuffer;
+  }
 }
 
 // ============================================================
@@ -352,7 +509,6 @@ async function uploadToRoblox(pngBuffer, displayName) {
     throw new Error(`No operation path: ${responseText}`);
   }
 
-  // Poll until complete
   for (let attempt = 1; attempt <= 10; attempt++) {
     await new Promise(resolve => setTimeout(resolve, 2000));
 
@@ -428,10 +584,11 @@ async function uploadToRoblox(pngBuffer, displayName) {
 // RENDER PIPELINE
 // ============================================================
 async function renderSticker(composition) {
-  const canvasW  = (composition.canvasSize && composition.canvasSize[0]) || CANVAS_SIZE;
-  const canvasH  = (composition.canvasSize && composition.canvasSize[1]) || CANVAS_SIZE;
-  const elements = composition.elements || [];
-  const layers   = [];
+  const canvasW     = (composition.canvasSize && composition.canvasSize[0]) || CANVAS_SIZE;
+  const canvasH     = (composition.canvasSize && composition.canvasSize[1]) || CANVAS_SIZE;
+  const elements    = composition.elements || [];
+  const paperFinish = composition.paperFinish || composition.finish || "standard";
+  const layers      = [];
 
   for (const elem of elements) {
     const url = resolveImageUrl(elem);
@@ -462,7 +619,6 @@ async function renderSticker(composition) {
     const elemColor = elem.color    || null;
 
     try {
-      // Step 1: Apply color tint FIRST on raw fetched buffer
       let workingBuffer = imageBuffer;
 
       if (elemColor) {
@@ -474,7 +630,6 @@ async function renderSticker(composition) {
         }
       }
 
-      // Step 2: Resize, flip, rotate
       let img = sharp(workingBuffer)
         .resize(sizePx, sizePx, {
           fit:        "contain",
@@ -519,12 +674,9 @@ async function renderSticker(composition) {
     }).png().toBuffer();
   }
 
-  // Sort by zIndex — first = bottom, last = top
   layers.sort((a, b) => (a.zIndex || 1) - (b.zIndex || 1));
-
   const sharpLayers = layers.map(({ input, left, top }) => ({ input, left, top }));
 
-  // Composite all elements onto the canvas
   const composited = await sharp({
     create: {
       width:      canvasW,
@@ -538,15 +690,9 @@ async function renderSticker(composition) {
   .toBuffer();
 
   // ── AUTOCROP + REPAD ──────────────────────────────────────
-  // Trim transparent border pixels to find tight content bounding
-  // box, then re-pad to a consistent square. This normalises the
-  // sticker size regardless of how much of the canvas the player
-  // filled. The white offset is applied AFTER this step so it
-  // is always the same fixed pixel thickness on every sticker.
   const cropped = await autocropAndRepad(composited, CANVAS_SIZE);
   // ── END AUTOCROP ──────────────────────────────────────────
 
-  // Apply white offset and optional outline on the cropped image
   const { data: rawData, info } = await sharp(cropped)
     .raw()
     .toBuffer({ resolveWithObject: true });
@@ -575,6 +721,12 @@ async function renderSticker(composition) {
     }
   }
 
+  // Kraft finish uses soft cream offset instead of white.
+  // Everything else is identical — same size, same shape.
+  const offsetR = paperFinish === "kraft" ? 245 : 255;
+  const offsetG = paperFinish === "kraft" ? 235 : 255;
+  const offsetB = paperFinish === "kraft" ? 215 : 255;
+
   const finalData = Buffer.alloc(totalPixels * 4);
 
   for (let i = 0; i < totalPixels; i++) {
@@ -588,9 +740,9 @@ async function renderSticker(composition) {
       finalData[i * 4 + 2] = rawData[i * channels + 2];
       finalData[i * 4 + 3] = origAlpha;
     } else if (isOffset) {
-      finalData[i * 4]     = 255;
-      finalData[i * 4 + 1] = 255;
-      finalData[i * 4 + 2] = 255;
+      finalData[i * 4]     = offsetR;
+      finalData[i * 4 + 1] = offsetG;
+      finalData[i * 4 + 2] = offsetB;
       finalData[i * 4 + 3] = 255;
     } //else if (isOutline) {
       //finalData[i * 4]     = 0;
@@ -603,24 +755,30 @@ async function renderSticker(composition) {
     }
   }
 
-  // Final output — resize to exact CANVAS_SIZE square to ensure
-  // consistent 400×400 output regardless of autocrop result
-  const finalBuffer = await sharp(finalData, {
+  let outputBuffer = await sharp(finalData, {
     raw: { width, height, channels: 4 },
   }).png().toBuffer();
 
-  // Resize to exactly CANVAS_SIZE if autocrop produced a different size
-  if (width !== CANVAS_SIZE || height !== CANVAS_SIZE) {
-    return await sharp(finalBuffer)
-      .resize(CANVAS_SIZE, CANVAS_SIZE, {
-        fit:        "contain",
-        background: { r: 0, g: 0, b: 0, alpha: 0 },
-      })
-      .png()
-      .toBuffer();
+  // ── PAPER FINISH (post-processing) ───────────────────────
+  // Kraft is handled above in the offset pass — not here.
+  // All other finishes are applied as post-processing.
+  if (paperFinish && paperFinish !== "standard" && paperFinish !== "kraft") {
+    console.log(`[render] Applying paper finish: ${paperFinish}`);
+    outputBuffer = await applyPaperFinish(outputBuffer, paperFinish);
   }
+  // ── END PAPER FINISH ─────────────────────────────────────
 
-  return finalBuffer;
+  // Always resize through Sharp to CANVAS_SIZE — this resampling
+  // step naturally produces the soft grey fringe at the sticker
+  // edge by blending the offset border against the transparent
+  // background. Do not skip this step even if dimensions match.
+  return await sharp(outputBuffer)
+    .resize(CANVAS_SIZE, CANVAS_SIZE, {
+      fit:        "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .png()
+    .toBuffer();
 }
 
 // ============================================================
@@ -661,7 +819,8 @@ export default async function handler(req, res) {
 
   try {
     console.log(`[render] Rendering sticker with ${
-      (composition.elements || []).length} element(s)`);
+      (composition.elements || []).length} element(s), finish: ${
+      composition.paperFinish || composition.finish || "standard"}`);
 
     const pngBuffer  = await renderSticker(composition);
     console.log(`[render] PNG rendered — ${pngBuffer.length} bytes — uploading to Roblox`);
